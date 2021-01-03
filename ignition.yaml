@@ -1,0 +1,126 @@
+---
+systemd:
+  units:
+    - name: docker.service
+      enabled: true
+    - name: locksmithd.service
+      mask: true
+    - name: install-ssm-agent.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=ssm-agent installer
+        ConditionPathExists=!/opt/bin/amazon-ssm-agent
+        After=network-online.target
+        Before=amazon-ssm-agent.service
+        [Service]
+        Type=oneshot
+        RemainAfterExit=true
+        ExecStart=/opt/bin/install-ssm-agent
+        [Install]
+        RequiredBy=amazon-ssm-agent.service
+    - name: amazon-ssm-agent.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=amazon-ssm-agent
+        After=network-online.target
+
+        [Service]
+        Type=simple
+        WorkingDirectory=/opt/bin/
+        ExecStart=/opt/bin/amazon-ssm-agent
+        KillMode=process
+        Restart=on-failure
+        RestartForceExitStatus=SIGPIPE
+        RestartSec=15min
+
+        [Install]
+        WantedBy=multi-user.target
+storage:
+  files:
+    - path: /opt/bin/install-ssm-agent
+      filesystem: root
+      mode: 0544
+      contents:
+        inline: |
+          #!/bin/bash
+          set -e
+          wget https://s3.us-west-1.amazonaws.com/amazon-ssm-us-west-1/latest/linux_amd64/amazon-ssm-agent.rpm -P /tmp/amazon-ssm-agent/
+          docker run --rm \
+            -v /tmp/amazon-ssm-agent:/tmp/amazon-ssm-agent \
+            -w /tmp/amazon-ssm-agent \
+            busybox:latest sh -c 'rpm2cpio amazon-ssm-agent.rpm | cpio -idmv'
+          mv /tmp/amazon-ssm-agent/usr/bin/* /opt/bin/
+          rm -rf /tmp/amazon-ssm-agent
+    - path: /opt/bin/init-etcd-certs
+      filesystem: root
+      mode: 0544
+      contents:
+        inline: |
+          #!/bin/bash
+          set -e
+          ETCD_SERVERS=${etcd_servers}
+          echo '{"CN":"peer","hosts":[""],"key":{"algo":"rsa","size":2048}}' \
+            | /opt/bin/cfssl gencert -config=/opt/cfssl/ca-config.json \
+            -ca=etcd-manager-ca.crt -ca-key=etcd-manager-ca.key -profile=peer \
+            -hostname="$$ETCD_SERVERS" - \
+            | /opt/bin/cfssljson -bare peer
+          echo '{"CN":"client","hosts":[""],"key":{"algo":"rsa","size":2048}}' \
+            | /opt/bin/cfssl gencert -config=/opt/cfssl/ca-config.json \
+            -ca=etcd-manager-ca.crt -ca-key=etcd-manager-ca.key -profile=client \
+            -hostname="$$ETCD_SERVERS" - \
+            | /opt/bin/cfssljson -bare client
+          mv peer-key.pem etcd-peers-ca.key
+          mv peer.pem etcd-peers-ca.crt
+          mv client-key.pem etcd-clients-ca.key
+          mv client.pem etcd-clients-ca.crt
+          rm *.csr
+    - path: /etc/kubernetes/pki/etcd-manager/etcd-manager-ca.crt
+      filesystem: root
+      mode: 0400
+      contents:
+        remote:
+          url: s3://${assets_bucket}/etcd-manager-ca.crt
+    - path: /etc/kubernetes/pki/etcd-manager/etcd-manager-ca.key
+      filesystem: root
+      mode: 0400
+      contents:
+        remote:
+          url: s3://${assets_bucket}/etcd-manager-ca.key
+    - path: /opt/bin/cfssl
+      filesystem: root
+      mode: 0755
+      contents:
+        remote:
+          url: s3://${assets_bucket}/cfssl/cfssl
+    - path: /opt/bin/cfssljson
+      filesystem: root
+      mode: 0755
+      contents:
+        remote:
+          url: s3://${assets_bucket}/cfssl/cfssljson
+    - path: /opt/cfssl/ca-config.json
+      filesystem: root
+      mode: 0644
+      contents:
+        remote:
+          url: s3://${assets_bucket}/cfssl/ca-config.json
+    - path: /opt/cfssl/ca-csr-etcd-client.json
+      filesystem: root
+      mode: 0644
+      contents:
+        remote:
+          url: s3://${assets_bucket}/cfssl/ca-csr-etcd-client.json
+    - path: /opt/cfssl/ca-csr-etcd-peer.json
+      filesystem: root
+      mode: 0644
+      contents:
+        remote:
+          url: s3://${assets_bucket}/cfssl/ca-csr-etcd-peer.json
+    - path: /opt/cfssl/ca-csr-etcd-server.json
+      filesystem: root
+      mode: 0644
+      contents:
+        remote:
+          url: s3://${assets_bucket}/cfssl/ca-csr-etcd-server.json

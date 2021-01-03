@@ -103,7 +103,6 @@ variable "stage" {
 
 variable "name" {
   type        = string
-  default     = null
   description = "Solution name, e.g. 'app' or 'jenkins'"
 }
 
